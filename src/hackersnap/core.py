@@ -11,7 +11,7 @@ import csv
 import io
 import json
 from dataclasses import dataclass, asdict, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -36,18 +36,80 @@ class Item:
 # --------------------------------------------------------------------------- #
 # fetch — THE PART YOU WRITE. Everything below fetch is already finished.
 # --------------------------------------------------------------------------- #
+
+_STORY_ENDPOINTS = {
+    "top": "topstories",
+    "new": "newstories",
+    "best": "beststories",
+    "ask": "askstories",
+    "show": "showstories",
+    "job": "jobstories",
+}
+
+_HN_BASE = "https://hacker-news.firebaseio.com/v0"
+_HN_ITEM_URL = "https://news.ycombinator.com/item?id={id}"
+
+
 def fetch(query: Optional[str] = None, limit: int = 10) -> list[Item]:
-    """Fetch up to `limit` items from Hacker News stories and return them as Items.
+    """Fetch up to *limit* stories from Hacker News.
 
-    Replace the body below with a real request. `httpx` is already a dependency:
+    *query* selects the story list:
+        top   – current top stories (default)
+        new   – newest stories
+        best  – all-time best
+        ask   – Ask HN posts
+        show  – Show HN posts
+        job   – job listings
 
-        with httpx.Client(timeout=15, headers={"User-Agent": "hackersnap"}) as c:
-            data = c.get("https://...").json()
-        return [Item(title=..., url=..., score=...) for row in data[:limit]]
+    Each story is fetched individually from the Firebase REST API; for large
+    limits this is O(limit) requests but is fine for typical CLI usage (≤ 30).
     """
-    raise NotImplementedError(
-        "hackersnap.fetch() is a scaffold stub — implement the real Hacker News stories request."
-    )
+    kind = (query or "top").lower().strip()
+    endpoint = _STORY_ENDPOINTS.get(kind, "topstories")
+
+    with httpx.Client(
+        timeout=20,
+        headers={"User-Agent": "hackersnap/0.1.0 (github.com/rook-builds/hackersnap)"},
+    ) as client:
+        # Step 1: get the ordered list of story IDs
+        resp = client.get(f"{_HN_BASE}/{endpoint}.json")
+        resp.raise_for_status()
+        ids: list[int] = resp.json() or []
+
+        # Step 2: fetch each story up to the requested limit
+        items: list[Item] = []
+        for story_id in ids[: limit * 2]:  # over-fetch to account for dead/deleted
+            if len(items) >= limit:
+                break
+            try:
+                data = client.get(f"{_HN_BASE}/item/{story_id}.json").json()
+            except Exception:
+                continue
+
+            if not data or data.get("deleted") or data.get("dead"):
+                continue
+
+            # Stories without a URL (Ask HN, Show HN text posts) get an HN link
+            url = data.get("url") or _HN_ITEM_URL.format(id=story_id)
+
+            # Unix timestamp → aware datetime
+            created_at: Optional[datetime] = None
+            if ts := data.get("time"):
+                created_at = datetime.fromtimestamp(ts, tz=timezone.utc)
+
+            items.append(
+                Item(
+                    title=data.get("title", ""),
+                    url=url,
+                    author=data.get("by", ""),
+                    score=data.get("score", 0),
+                    comments=data.get("descendants", 0),
+                    created_at=created_at,
+                    body=data.get("text", ""),
+                )
+            )
+
+        return items
 
 
 # --------------------------------------------------------------------------- #

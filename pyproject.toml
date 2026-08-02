@@ -7,7 +7,7 @@ packages = ["src/hackersnap"]
 
 [project]
 name = "hackersnap"
-version = "0.1.0"
+version = "0.2.0"
 description = "Turn Hacker News top stories into a clean markdown digest"
 readme = "README.md"
 license = {text = "MIT"}
